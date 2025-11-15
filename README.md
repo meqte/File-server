@@ -68,7 +68,7 @@ pip install -r requirements.txt
 
 2. **设置环境变量**
 ```bash
-export TEMPSTORE_ADMIN_PASSWORD="Win2020!"
+export TEMPSTORE_ADMIN_PASSWORD="000000"
 export TEMPSTORE_MAX_STORAGE="10GB"
 export TEMPSTORE_MAX_FILE_SIZE="100MB"
 export TEMPSTORE_FILE_EXPIRE_HOURS="24"
@@ -85,7 +85,7 @@ python app.py
 
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
-| TEMPSTORE_ADMIN_PASSWORD | Win2020! | 管理员密码 |
+| TEMPSTORE_ADMIN_PASSWORD | 000000 | 管理员密码 |
 | TEMPSTORE_UPLOAD_DIR | ./uploads | 文件上传目录 |
 | TEMPSTORE_MAX_STORAGE | 20GB | 总存储上限 |
 | TEMPSTORE_MAX_FILE_SIZE | 1GB | 单个文件大小限制 |
