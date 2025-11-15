@@ -520,35 +520,67 @@ class TempStore:
                         'message': f'文件过大（最大{self.config.max_file_size // 1024 // 1024}MB）'
                     }), 400
                 
-                # 生成上传ID
-                upload_id = self._generate_file_id()
+                # 检查是否已经存在相同文件的上传任务
+                existing_upload_id = None
+                temp_base_dir = Path(self.config.upload_dir) / 'temp'
+                if temp_base_dir.exists():
+                    for upload_dir in temp_base_dir.iterdir():
+                        if upload_dir.is_dir():
+                            info_file = upload_dir / 'upload_info.json'
+                            if info_file.exists():
+                                try:
+                                    with open(info_file, 'r', encoding='utf-8') as f:
+                                        existing_info = json.load(f)
+                                    # 检查是否为相同文件（文件名和大小相同）
+                                    if (existing_info.get('filename') == filename and 
+                                        existing_info.get('file_size') == file_size):
+                                        existing_upload_id = existing_info.get('upload_id')
+                                        break
+                                except Exception as e:
+                                    logger.warning(f"读取现有上传信息失败: {e}")
                 
-                # 创建临时目录
-                temp_dir = Path(self.config.upload_dir) / 'temp' / upload_id
-                temp_dir.mkdir(parents=True, exist_ok=True)
-                
-                # 保存上传信息
-                upload_info = {
-                    'upload_id': upload_id,
-                    'filename': filename,
-                    'file_size': file_size,
-                    'chunk_size': chunk_size,
-                    'chunk_count': (file_size + chunk_size - 1) // chunk_size,
-                    'uploaded_chunks': [],
-                    'created_time': int(time.time())
-                }
-                
-                # 保存上传信息到临时文件
-                info_file = temp_dir / 'upload_info.json'
-                with open(info_file, 'w', encoding='utf-8') as f:
-                    json.dump(upload_info, f, ensure_ascii=False, indent=2)
-                
-                logger.info(f"初始化分片上传: {upload_id} - {filename}")
+                # 如果存在相同文件的上传任务，使用现有的
+                if existing_upload_id:
+                    upload_id = existing_upload_id
+                    temp_dir = temp_base_dir / upload_id
+                    info_file = temp_dir / 'upload_info.json'
+                    
+                    # 读取现有上传信息
+                    with open(info_file, 'r', encoding='utf-8') as f:
+                        upload_info = json.load(f)
+                    
+                    logger.info(f"继续分片上传: {upload_id} - {filename} (已上传 {len(upload_info.get('uploaded_chunks', []))}/{upload_info.get('chunk_count', 0)} 个分片)")
+                else:
+                    # 生成新的上传ID
+                    upload_id = self._generate_file_id()
+                    
+                    # 创建临时目录
+                    temp_dir = temp_base_dir / upload_id
+                    temp_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    # 保存上传信息
+                    upload_info = {
+                        'upload_id': upload_id,
+                        'filename': filename,
+                        'file_size': file_size,
+                        'chunk_size': chunk_size,
+                        'chunk_count': (file_size + chunk_size - 1) // chunk_size,
+                        'uploaded_chunks': [],
+                        'created_time': int(time.time())
+                    }
+                    
+                    # 保存上传信息到临时文件
+                    info_file = temp_dir / 'upload_info.json'
+                    with open(info_file, 'w', encoding='utf-8') as f:
+                        json.dump(upload_info, f, ensure_ascii=False, indent=2)
+                    
+                    logger.info(f"初始化分片上传: {upload_id} - {filename}")
                 
                 return jsonify({
                     'status': 'success',
                     'upload_id': upload_id,
-                    'chunk_count': upload_info['chunk_count']
+                    'chunk_count': upload_info['chunk_count'],
+                    'uploaded_chunks': upload_info.get('uploaded_chunks', [])
                 })
                 
             except Exception as e:

@@ -310,16 +310,22 @@ class TempStoreUI {
         // 显示上传进度区域
         this.showUploadProgress();
 
-        // 处理每个文件
-        fileList.forEach(file => {
+        // 处理每个文件（串行处理，避免进度条冲突）
+        this.processFilesSequentially(fileList);
+    }
+
+    async processFilesSequentially(fileList) {
+        for (const file of fileList) {
             // 对于大文件使用分片上传
             if (file.size > 100 * 1024 * 1024) { // 大于100MB的文件使用分片上传
-                this.handleChunkedUpload(file);
+                await this.handleChunkedUpload(file);
             } else {
                 // 小文件使用普通上传
-                this.handleRegularUpload(file);
+                await this.handleRegularUpload(file);
             }
-        });
+        }
+        
+        // 不再在这里调用showUploadSuccessInProgressBar，每个文件独立处理
     }
 
     async handleRegularUpload(file) {
@@ -327,15 +333,53 @@ class TempStoreUI {
         formData.append('files', file);
 
         try {
-            const response = await fetch('/api/upload', {
-                method: 'POST',
-                body: formData
+            // 显示上传进度条
+            this.showUploadProgress();
+            this.updateRegularUploadProgress(file, 0, 0); // 添加速度参数
+            
+            // 使用 XMLHttpRequest 来跟踪上传进度
+            const xhr = new XMLHttpRequest();
+            
+            // 上传进度事件
+            xhr.upload.addEventListener('progress', (event) => {
+                if (event.lengthComputable) {
+                    const percentComplete = (event.loaded / event.total) * 100;
+                    const speed = event.loaded / (event.timeStamp / 1000); // bytes per second
+                    this.updateRegularUploadProgress(file, percentComplete, speed);
+                }
             });
-
-            const result = await response.json();
+            
+            // 上传完成事件
+            const promise = new Promise((resolve, reject) => {
+                xhr.addEventListener('load', () => {
+                    if (xhr.status === 200) {
+                        try {
+                            const result = JSON.parse(xhr.responseText);
+                            resolve(result);
+                        } catch (e) {
+                            reject(new Error('解析响应失败'));
+                        }
+                    } else {
+                        reject(new Error(`上传失败: ${xhr.status}`));
+                    }
+                });
+                
+                xhr.addEventListener('error', () => {
+                    reject(new Error('网络错误'));
+                });
+            });
+            
+            // 开始上传
+            xhr.open('POST', '/api/upload', true);
+            xhr.send(formData);
+            
+            // 等待上传完成
+            const result = await promise;
             
             if (result.status === 'success') {
-                this.showNotification('上传成功', `成功上传文件: ${file.name}`, 'success');
+                this.updateRegularUploadProgress(file, 100, 0);
+                // 每个文件上传完成后独立显示成功状态
+                this.showUploadSuccessInProgressBar(file.name, file.size);
                 this.loadFiles();
                 this.loadStats();
             } else {
@@ -345,7 +389,7 @@ class TempStoreUI {
             console.error('上传失败:', error);
             this.showNotification('上传失败', error.message, 'error');
         } finally {
-            this.hideUploadProgress();
+            // 不再单独隐藏进度条，由processFilesSequentially统一处理
             const fileInput = document.getElementById('file-input');
             if (fileInput) {
                 fileInput.value = '';
@@ -383,8 +427,27 @@ class TempStoreUI {
             const uploadId = initResult.upload_id;
             let uploadedChunks = 0;
             
-            // 2. 逐个上传分片
+            // 如果服务器返回了已上传的分片信息，则使用这些信息
+            if (initResult.uploaded_chunks) {
+                uploadedChunks = initResult.uploaded_chunks.length;
+                uploadedBytes = uploadedChunks * chunkSize;
+                // 更新进度显示
+                const progress = (uploadedChunks / chunks) * 100;
+                this.updateChunkedUploadProgress(file, uploadedChunks, chunks, progress, 0, 0);
+                
+                // 如果有已上传的分片，自动继续上传，无需用户确认
+                if (initResult.uploaded_chunks.length > 0) {
+                    console.log(`检测到文件 "${file.name}" 已上传了 ${initResult.uploaded_chunks.length}/${chunks} 个分片，自动继续上传。`);
+                }
+            }
+            
+            // 2. 逐个上传分片（跳过已上传的分片）
             for (let i = 0; i < chunks; i++) {
+                // 如果分片已上传，跳过
+                if (initResult.uploaded_chunks && initResult.uploaded_chunks.includes(i)) {
+                    continue;
+                }
+                
                 const start = i * chunkSize;
                 const end = Math.min(file.size, start + chunkSize);
                 const chunk = file.slice(start, end);
@@ -438,7 +501,8 @@ class TempStoreUI {
                 throw new Error(completeResult.message || '完成上传失败');
             }
             
-            this.showNotification('上传成功', `成功上传文件: ${completeResult.original_name}`, 'success');
+            // 每个文件上传完成后独立显示成功状态
+            this.showUploadSuccessInProgressBar(file.name, file.size);
             this.loadFiles();
             this.loadStats();
             
@@ -446,7 +510,7 @@ class TempStoreUI {
             console.error('分片上传失败:', error);
             this.showNotification('上传失败', error.message, 'error');
         } finally {
-            this.hideUploadProgress();
+            // 不再单独隐藏进度条，由processFilesSequentially统一处理
             const fileInput = document.getElementById('file-input');
             if (fileInput) {
                 fileInput.value = '';
@@ -489,38 +553,103 @@ class TempStoreUI {
         const remainingBytes = file.size - uploadedBytes;
         const remainingTime = avgSpeed > 0 ? remainingBytes / avgSpeed : 0;
         
+        // 为每个文件创建独立的进度条容器
+        const fileId = `${file.name}-${file.size}`;
+        let progressItem = document.getElementById(fileId);
+        
         // 如果还没有创建进度条，则创建一个
-        if (progressContainer.innerHTML === '') {
-            const progressItem = document.createElement('div');
-            progressItem.className = 'bg-white p-4 rounded-lg border';
+        if (!progressItem) {
+            progressItem = document.createElement('div');
+            progressItem.id = fileId;
+            progressItem.className = 'bg-white rounded-lg border mb-2 relative overflow-hidden';
             progressItem.innerHTML = `
-                <div class="flex items-center justify-between mb-2">
-                    <span class="text-sm font-medium text-gray-900 truncate">${file.name}</span>
-                    <span class="text-xs text-gray-500">${formatFileSizeMB(file.size)}</span>
-                </div>
-                <div class="w-full bg-gray-200 rounded-full h-2 mb-2">
-                    <div class="progress-bar bg-blue-500 h-2 rounded-full" style="width: 0%"></div>
-                </div>
-                <div class="flex justify-between text-xs text-gray-500">
-                    <span class="speed-text">0 kb/s</span>
-                    <span class="size-text">0MB/${formatFileSizeMB(file.size)}</span>
-                    <span class="time-text">剩余时间 0分钟0秒</span>
+                <div class="progress-overlay absolute top-0 left-0 w-full h-full bg-blue-100 transition-all duration-300 ease-out" style="width: 0%"></div>
+                <div class="relative z-10 p-4">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-sm font-medium text-gray-900 truncate">${file.name}</span>
+                        <span class="text-xs text-gray-500">${formatFileSizeMB(file.size)}</span>
+                    </div>
+                    <div class="flex justify-between text-xs text-gray-500">
+                        <span class="speed-text">0 kb/s</span>
+                        <span class="size-text">0MB/${formatFileSizeMB(file.size)}</span>
+                        <span class="time-text">剩余时间 0分钟0秒</span>
+                    </div>
                 </div>
             `;
-            progressContainer.innerHTML = '';
             progressContainer.appendChild(progressItem);
         }
         
-        const progressBar = progressContainer.querySelector('.progress-bar');
-        const speedText = progressContainer.querySelector('.speed-text');
-        const sizeText = progressContainer.querySelector('.size-text');
-        const timeText = progressContainer.querySelector('.time-text');
+        const progressOverlay = progressItem.querySelector('.progress-overlay');
+        const speedText = progressItem.querySelector('.speed-text');
+        const sizeText = progressItem.querySelector('.size-text');
+        const timeText = progressItem.querySelector('.time-text');
         
-        if (progressBar && speedText && sizeText && timeText) {
-            progressBar.style.width = `${percentComplete}%`;
+        if (progressOverlay && speedText && sizeText && timeText) {
+            progressOverlay.style.width = `${percentComplete}%`;
             speedText.textContent = `${formatSpeed(avgSpeed)}`;
             sizeText.textContent = `${formatFileSizeMB(uploadedBytes)}/${formatFileSizeMB(file.size)}`;
-            timeText.textContent = `剩余时间 ${formatRemainingTime(remainingTime)}`;
+            // 当上传完成时显示"上传成功"，否则显示剩余时间
+            timeText.textContent = percentComplete >= 100 ? '上传成功' : `剩余时间 ${formatRemainingTime(remainingTime)}`;
+        }
+    }
+
+    updateRegularUploadProgress(file, percentComplete, speed = 0) {
+        const progressContainer = document.getElementById('upload-progress');
+        if (!progressContainer) return;
+        
+        // 格式化文件大小显示为 MB
+        const formatFileSizeMB = (bytes) => {
+            return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+        };
+        
+        // 为每个文件创建独立的进度条容器
+        const fileId = `${file.name}-${file.size}`;
+        let progressItem = document.getElementById(fileId);
+        
+        // 如果还没有创建进度条，则创建一个
+        if (!progressItem) {
+            progressItem = document.createElement('div');
+            progressItem.id = fileId;
+            progressItem.className = 'bg-white rounded-lg border mb-2 relative overflow-hidden';
+            progressItem.innerHTML = `
+                <div class="progress-overlay absolute top-0 left-0 w-full h-full bg-blue-100 transition-all duration-300 ease-out" style="width: 0%"></div>
+                <div class="relative z-10 p-4">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-sm font-medium text-gray-900 truncate">${file.name}</span>
+                        <span class="text-xs text-gray-500">${formatFileSizeMB(file.size)}</span>
+                    </div>
+                    <div class="flex justify-between text-xs text-gray-500">
+                        <span class="speed-text">0 kb/s</span>
+                        <span class="size-text">0MB/${formatFileSizeMB(file.size)}</span>
+                        <span class="percent-text">${Math.round(percentComplete)}%</span>
+                    </div>
+                </div>
+            `;
+            progressContainer.appendChild(progressItem);
+        }
+        
+        // 格式化速度显示为 kb/s
+        const formatSpeed = (bytesPerSecond) => {
+            if (bytesPerSecond < 1024) {
+                return `${Math.round(bytesPerSecond)} B/s`;
+            } else {
+                // 转换为 kb/s 并保留整数
+                return `${Math.round(bytesPerSecond / 1024)} kb/s`;
+            }
+        };
+        
+        const progressOverlay = progressItem.querySelector('.progress-overlay');
+        const speedText = progressItem.querySelector('.speed-text');
+        const sizeText = progressItem.querySelector('.size-text');
+        const percentText = progressItem.querySelector('.percent-text');
+        
+        if (progressOverlay && speedText && sizeText && percentText) {
+            progressOverlay.style.width = `${percentComplete}%`;
+            // 显示上传速度
+            speedText.textContent = `${formatSpeed(speed)}`;
+            sizeText.textContent = `${formatFileSizeMB((percentComplete / 100) * file.size)}/${formatFileSizeMB(file.size)}`;
+            // 当上传完成时显示"上传成功"，否则显示百分比
+            percentText.textContent = percentComplete >= 100 ? '上传成功' : `${Math.round(percentComplete)}%`;
         }
     }
 
@@ -534,8 +663,64 @@ class TempStoreUI {
     hideUploadProgress() {
         const progressContainer = document.getElementById('upload-progress');
         if (progressContainer) {
-            progressContainer.classList.add('hidden');
-            progressContainer.innerHTML = '';
+            // 检查是否还有正在进行的上传
+            const progressItems = progressContainer.querySelectorAll('.progress-overlay');
+            let allComplete = true;
+            
+            for (const item of progressItems) {
+                const width = parseFloat(item.style.width);
+                if (width < 100) {
+                    allComplete = false;
+                    break;
+                }
+            }
+            
+            // 只有当所有上传都完成时才隐藏进度条
+            if (allComplete) {
+                // 上传完成时，将所有进度条设置为100%
+                progressItems.forEach(item => {
+                    item.style.width = '100%';
+                });
+                
+                // 不再立即隐藏进度条，由showUploadSuccessInProgressBar处理
+                // 进度条会在showUploadSuccessInProgressBar中6秒后隐藏
+            }
+        }
+    }
+
+    showUploadSuccessInProgressBar(filename, fileSize = 0) {
+        // 为特定文件显示上传成功状态并6秒后隐藏其进度条
+        const fileId = `${filename}-${fileSize}`; // 使用文件名和大小作为ID
+        const progressItem = document.getElementById(fileId);
+        
+        if (progressItem) {
+            // 保持显示上传完成的进度条状态（100%填充）
+            const progressOverlay = progressItem.querySelector('.progress-overlay');
+            if (progressOverlay) {
+                progressOverlay.style.width = '100%';
+            }
+            
+            // 更新文本显示为上传成功
+            // 检查是分片上传还是普通上传的进度条结构
+            const percentText = progressItem.querySelector('.percent-text');
+            const timeText = progressItem.querySelector('.time-text');
+            
+            if (percentText) {
+                percentText.textContent = '上传成功';
+            } else if (timeText) {
+                timeText.textContent = '上传成功';
+            }
+            
+            // 6秒后隐藏该文件的进度条
+            setTimeout(() => {
+                progressItem.remove();
+                
+                // 检查是否还有其他进度条，如果没有则隐藏整个容器
+                const progressContainer = document.getElementById('upload-progress');
+                if (progressContainer && progressContainer.children.length === 0) {
+                    progressContainer.classList.add('hidden');
+                }
+            }, 6000);
         }
     }
 
@@ -596,6 +781,11 @@ class TempStoreUI {
                         </div>
                     </div>
                     <div class="flex items-center space-x-2">
+                        <button class="text-blue-500 hover:text-blue-700 p-1" onclick="tempStoreUI.copyFileLink('${file.file_id}')" title="复制下载链接">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+                            </svg>
+                        </button>
                         <button class="text-green-500 hover:text-green-700 p-1" onclick="tempStoreUI.downloadFile('${file.file_id}')">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
@@ -1050,6 +1240,59 @@ class TempStoreUI {
             console.error('下载失败:', error);
             this.showNotification('下载失败', '文件下载失败', 'error');
         }
+    }
+
+    copyFileLink(fileId) {
+        try {
+            // 构造完整的下载链接
+            const downloadUrl = `${window.location.origin}/api/download/${fileId}`;
+            
+            // 使用Clipboard API复制链接
+            if (navigator.clipboard) {
+                navigator.clipboard.writeText(downloadUrl).then(() => {
+                    this.showNotification('复制成功', '下载链接已复制到剪贴板', 'success');
+                }).catch(err => {
+                    console.error('复制失败:', err);
+                    // 降级到传统方法
+                    this.fallbackCopyTextToClipboard(downloadUrl);
+                });
+            } else {
+                // 降级到传统方法
+                this.fallbackCopyTextToClipboard(downloadUrl);
+            }
+        } catch (error) {
+            console.error('复制链接失败:', error);
+            this.showNotification('复制失败', '无法复制下载链接', 'error');
+        }
+    }
+
+    fallbackCopyTextToClipboard(text) {
+        const textArea = document.createElement('textarea');
+        textArea.value = text;
+        
+        // 避免滚动到底部
+        textArea.style.top = '0';
+        textArea.style.left = '0';
+        textArea.style.position = 'fixed';
+        textArea.style.opacity = '0';
+        
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        
+        try {
+            const successful = document.execCommand('copy');
+            if (successful) {
+                this.showNotification('复制成功', '下载链接已复制到剪贴板', 'success');
+            } else {
+                this.showNotification('复制失败', '无法复制下载链接', 'error');
+            }
+        } catch (err) {
+            console.error('复制命令失败:', err);
+            this.showNotification('复制失败', '无法复制下载链接', 'error');
+        }
+        
+        document.body.removeChild(textArea);
     }
 
     async deleteFile(fileId) {
