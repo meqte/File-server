@@ -18,10 +18,10 @@ TempStore 是一个基于 Python Flask 框架开发的轻量级临时文件存�
 - **访问控制**: IP级别频率限制和错误处理
 
 ### 📊 性能优化
-- **分片上传**: 大文件自动分片处理
+- **分片上传**: 大文件自动分片处理（大于100MB的文件）
 - **元数据缓存**: 文件信息内存缓存，快速响应
-- **智能清理**: 15分钟间隔检查，批量删除优化
-- **前端优化**: 防抖搜索、虚拟滚动、响应式设计
+- **智能清理**: 60分钟间隔检查，批量删除优化
+- **前端优化**: 防抖搜索、响应式设计
 
 ### 🎨 用户体验
 - **现代化UI**: Tailwind CSS + Heroicons 图标
@@ -68,7 +68,7 @@ pip install -r requirements.txt
 
 2. **设置环境变量**
 ```bash
-export TEMPSTORE_ADMIN_PASSWORD="your_secure_password"
+export TEMPSTORE_ADMIN_PASSWORD="Win2020!"
 export TEMPSTORE_MAX_STORAGE="10GB"
 export TEMPSTORE_MAX_FILE_SIZE="100MB"
 export TEMPSTORE_FILE_EXPIRE_HOURS="24"
@@ -85,12 +85,12 @@ python app.py
 
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
-| TEMPSTORE_ADMIN_PASSWORD | 000000 | 管理员密码 |
+| TEMPSTORE_ADMIN_PASSWORD | Win2020! | 管理员密码 |
 | TEMPSTORE_UPLOAD_DIR | ./uploads | 文件上传目录 |
 | TEMPSTORE_MAX_STORAGE | 20GB | 总存储上限 |
 | TEMPSTORE_MAX_FILE_SIZE | 1GB | 单个文件大小限制 |
 | TEMPSTORE_FILE_EXPIRE_HOURS | 24 | 文件过期时间（小时） |
-| TEMPSTORE_CLEAN_INTERVAL | 900 | 清理检查间隔（秒） |
+| TEMPSTORE_CLEAN_INTERVAL | 3600 | 清理检查间隔（秒） |
 | TEMPSTORE_SESSION_TIMEOUT | 1800 | 管理员会话超时（秒） |
 
 ### 管理员功能
@@ -115,14 +115,12 @@ python app.py
 ```
 tempstore/
 ├── app.py                    # 后端主应用
+├── index.html                # 前端页面
+├── main.js                   # 前端JavaScript代码
+├── tailwind.css              # Tailwind CSS样式文件
 ├── requirements.txt          # Python依赖
 ├── start.bat                 # Windows启动脚本
 ├── start.sh                  # Linux/Mac启动脚本
-├── templates/
-│   └── index.html           # 前端页面模板
-├── static/
-│   └── js/
-│       └── main.js          # 前端JavaScript代码
 ├── uploads/                  # 文件存储目录（自动创建）
 ├── tempstore.log            # 系统日志文件（自动生成）
 └── metadata.json            # 文件元数据（自动生成）
@@ -238,4 +236,6 @@ tail -n 100 tempstore.log
 3. **网络带宽**: 确保足够的网络带宽
 4. **定期维护**: 定期清理日志和临时文件
 
-## 🤝
+## 🤝 联系方式
+
+如有问题或建议，请联系项目维护者。
